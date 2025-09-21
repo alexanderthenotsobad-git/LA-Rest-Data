@@ -1,241 +1,253 @@
 # /var/www/LA-Rest-Data/src/data_cleaner.py
 #!/usr/bin/env python3
 """
-Data cleaning module for restaurant data
-Handles deduplication, validation, and formatting for Power BI
+Enhanced data cleaning and processing for LA County restaurant data
+Adds calculated fields for Power BI analysis
 """
 
 import pandas as pd
+import numpy as np
 import logging
 import os
-import re
-from datetime import datetime
-
 
 class DataCleaner:
     def __init__(self):
-        """Initialize data cleaner with logging"""
         self.logger = logging.getLogger(__name__)
-        self.raw_data_path = "data/raw/"
-        self.processed_data_path = "data/processed/"
         
-        # Ensure processed directory exists
-        os.makedirs(self.processed_data_path, exist_ok=True)
-    
-    def load_raw_data(self, filename="la_restaurants_raw.csv"):
-        """Load raw restaurant data from CSV"""
+    def load_data(self, filepath='data/processed/la_county_restaurants_final.csv'):
+        """Load the restaurant data"""
         try:
-            filepath = os.path.join(self.processed_data_path, filename)
             if os.path.exists(filepath):
                 df = pd.read_csv(filepath)
-                self.logger.info(f"Loaded {len(df)} records from {filename}")
+                self.logger.info(f"Loaded {len(df)} records from {filepath}")
                 return df
             else:
-                self.logger.error(f"File not found: {filepath}")
-                return pd.DataFrame()
+                self.logger.warning(f"File not found: {filepath}")
+                return None
         except Exception as e:
             self.logger.error(f"Error loading data: {str(e)}")
-            return pd.DataFrame()
-    
-    def clean_restaurant_names(self, df):
-        """Clean and standardize restaurant names"""
-        if 'Restaurant_Name' in df.columns:
-            # Remove leading/trailing whitespace
-            df['Restaurant_Name'] = df['Restaurant_Name'].str.strip()
-            
-            # Remove restaurants with generic or empty names
-            invalid_names = ['Unknown', 'Restaurant', '', None]
-            df = df[~df['Restaurant_Name'].isin(invalid_names)]
-            df = df[df['Restaurant_Name'].notna()]
-            
-            self.logger.info(f"Cleaned restaurant names, {len(df)} records remaining")
-        
-        return df
-    
-    def clean_ratings_and_reviews(self, df):
-        """Clean rating and review count data"""
-        if 'Rating' in df.columns:
-            # Convert to numeric and handle invalid values
-            df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
-            
-            # Filter reasonable rating range (0-5)
-            df = df[(df['Rating'] >= 0) & (df['Rating'] <= 5)]
-            
-            # Round to 1 decimal place
-            df['Rating'] = df['Rating'].round(1)
-        
-        if 'Review_Count' in df.columns:
-            # Convert to integer and handle negatives
-            df['Review_Count'] = pd.to_numeric(df['Review_Count'], errors='coerce').fillna(0)
-            df['Review_Count'] = df['Review_Count'].astype(int)
-            df = df[df['Review_Count'] >= 0]
-        
-        return df
-    
-    def clean_price_levels(self, df):
-        """Standardize price level data"""
-        if 'Price_Level' in df.columns:
-            # Convert to numeric (0-4 scale)
-            df['Price_Level'] = pd.to_numeric(df['Price_Level'], errors='coerce')
-            
-            # Filter valid price levels
-            df.loc[~df['Price_Level'].isin([0, 1, 2, 3, 4]), 'Price_Level'] = None
-        
-        return df
-    
-    def clean_coordinates(self, df):
-        """Validate and clean latitude/longitude data"""
-        if 'Latitude' in df.columns and 'Longitude' in df.columns:
-            # Convert to numeric
-            df['Latitude'] = pd.to_numeric(df['Latitude'], errors='coerce')
-            df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
-            
-            # Filter LA area coordinates (rough bounds)
-            la_bounds = {
-                'lat_min': 33.7, 'lat_max': 34.3,
-                'lon_min': -118.7, 'lon_max': -118.1
-            }
-            
-            coord_filter = (
-                (df['Latitude'] >= la_bounds['lat_min']) & 
-                (df['Latitude'] <= la_bounds['lat_max']) &
-                (df['Longitude'] >= la_bounds['lon_min']) & 
-                (df['Longitude'] <= la_bounds['lon_max'])
-            )
-            
-            df = df[coord_filter]
-            self.logger.info(f"Filtered coordinates to LA area, {len(df)} records remaining")
-        
-        return df
-    
-    def clean_zip_codes(self, df):
-        """Standardize ZIP code format"""
-        if 'ZIP_Code' in df.columns:
-            # Convert to string and extract 5-digit ZIP
-            df['ZIP_Code'] = df['ZIP_Code'].astype(str)
-            df['ZIP_Code'] = df['ZIP_Code'].apply(self._extract_zip)
-            
-            # Remove invalid ZIP codes
-            df = df[df['ZIP_Code'].notna()]
-            df = df[df['ZIP_Code'] != '']
-        
-        return df
-    
-    def _extract_zip(self, zip_str):
-        """Extract 5-digit ZIP code from string"""
-        if pd.isna(zip_str) or zip_str == 'nan':
             return None
-        
-        # Look for 5-digit pattern
-        zip_match = re.search(r'\b(\d{5})\b', str(zip_str))
-        return zip_match.group(1) if zip_match else None
     
-    def remove_duplicates(self, df):
-        """Remove duplicate restaurants"""
+    def add_calculated_fields(self, df):
+        """Add calculated fields for Power BI analysis"""
+        
+        # Price Label Column
+        def get_price_label(price_level):
+            if pd.isna(price_level):
+                return "Unknown"
+            price_map = {0: "Free", 1: "$", 2: "$$", 3: "$$$", 4: "$$$$"}
+            return price_map.get(int(price_level), "Unknown")
+        
+        df['Price_Label'] = df['Price_Level'].apply(get_price_label)
+        
+        # Rating Category Column
+        def get_rating_category(rating):
+            if pd.isna(rating):
+                return "No Rating"
+            elif rating >= 4.5:
+                return "Excellent (4.5+)"
+            elif rating >= 4.0:
+                return "Very Good (4.0-4.4)"
+            elif rating >= 3.5:
+                return "Good (3.5-3.9)"
+            elif rating >= 3.0:
+                return "Average (3.0-3.4)"
+            else:
+                return "Below Average (<3.0)"
+        
+        df['Rating_Category'] = df['Rating'].apply(get_rating_category)
+        
+        # Review Volume Category
+        def get_review_volume(review_count):
+            if pd.isna(review_count) or review_count == 0:
+                return "No Reviews"
+            elif review_count >= 1000:
+                return "High Volume (1000+)"
+            elif review_count >= 500:
+                return "Medium Volume (500-999)"
+            elif review_count >= 100:
+                return "Low Volume (100-499)"
+            else:
+                return "Very Low Volume (<100)"
+        
+        df['Review_Volume'] = df['Review_Count'].apply(get_review_volume)
+        
+        # Restaurant density by ZIP code
+        zip_counts = df['ZIP_Code'].value_counts().to_dict()
+        df['Restaurants_in_ZIP'] = df['ZIP_Code'].map(zip_counts)
+        
+        # Average rating by ZIP code
+        zip_avg_ratings = df.groupby('ZIP_Code')['Rating'].mean().to_dict()
+        df['ZIP_Avg_Rating'] = df['ZIP_Code'].map(zip_avg_ratings)
+        
+        # Restaurant density by neighborhood
+        neighborhood_counts = df['Neighborhood'].value_counts().to_dict()
+        df['Restaurants_in_Neighborhood'] = df['Neighborhood'].map(neighborhood_counts)
+        
+        # Average rating by neighborhood
+        neighborhood_avg_ratings = df.groupby('Neighborhood')['Rating'].mean().to_dict()
+        df['Neighborhood_Avg_Rating'] = df['Neighborhood'].map(neighborhood_avg_ratings)
+        
+        # Market saturation index (combines density + average rating)
+        def calculate_market_saturation(row):
+            if pd.isna(row['ZIP_Avg_Rating']) or pd.isna(row['Restaurants_in_ZIP']):
+                return None
+            
+            # Normalize values
+            normalized_count = min(row['Restaurants_in_ZIP'] / 20, 1)  # Cap at 20 restaurants = 1.0
+            normalized_rating = row['ZIP_Avg_Rating'] / 5.0  # Rating scale 0-5
+            
+            # Weighted combination (60% density, 40% rating)
+            return round((normalized_count * 0.6) + (normalized_rating * 0.4), 3)
+        
+        df['Market_Saturation_Index'] = df.apply(calculate_market_saturation, axis=1)
+        
+        # High-value target indicator (high rating, low competition)
+        def is_high_value_target(row):
+            if pd.isna(row['ZIP_Avg_Rating']) or pd.isna(row['Restaurants_in_ZIP']):
+                return "Unknown"
+            
+            avg_rating = row['ZIP_Avg_Rating']
+            restaurant_count = row['Restaurants_in_ZIP']
+            
+            if avg_rating >= 4.0 and restaurant_count <= 10:
+                return "High Value Target"
+            elif avg_rating >= 3.5 and restaurant_count <= 15:
+                return "Moderate Value Target"
+            elif restaurant_count >= 30:
+                return "Saturated Market"
+            else:
+                return "Standard Market"
+        
+        df['Market_Opportunity'] = df.apply(is_high_value_target, axis=1)
+        
+        return df
+    
+    def clean_data_quality(self, df):
+        """Clean data quality issues"""
+        
+        # Remove obvious data quality issues
         initial_count = len(df)
         
-        # Remove exact duplicates
-        df = df.drop_duplicates()
+        # Remove restaurants with invalid coordinates (0,0 or extreme outliers)
+        df = df[~((df['Latitude'] == 0) & (df['Longitude'] == 0))]
         
-        # Remove duplicates based on name and address
-        if 'Restaurant_Name' in df.columns and 'Address' in df.columns:
-            df = df.drop_duplicates(subset=['Restaurant_Name', 'Address'], keep='first')
-        elif 'Restaurant_Name' in df.columns:
-            df = df.drop_duplicates(subset=['Restaurant_Name'], keep='first')
+        # Remove restaurants outside reasonable LA County bounds
+        # LA County approximate bounds: 33.7°N to 34.8°N, -118.9°W to -117.6°W
+        df = df[
+            (df['Latitude'] >= 33.5) & (df['Latitude'] <= 35.0) &
+            (df['Longitude'] >= -119.5) & (df['Longitude'] <= -117.0)
+        ]
         
-        duplicates_removed = initial_count - len(df)
-        if duplicates_removed > 0:
-            self.logger.info(f"Removed {duplicates_removed} duplicate records")
+        # Remove duplicate restaurants (same name + similar location)
+        df = df.drop_duplicates(subset=['Restaurant_Name', 'ZIP_Code'], keep='first')
         
-        return df
-    
-    def add_derived_fields(self, df):
-        """Add calculated fields for analysis"""
-        # Price level labels
-        if 'Price_Level' in df.columns:
-            price_labels = {0: 'Free', 1: '$', 2: '$$', 3: '$$$', 4: '$$$$'}
-            df['Price_Label'] = df['Price_Level'].map(price_labels)
+        # Clean restaurant names
+        df['Restaurant_Name'] = df['Restaurant_Name'].str.strip()
+        df['Restaurant_Name'] = df['Restaurant_Name'].str.title()
         
-        # Rating categories
-        if 'Rating' in df.columns:
-            df['Rating_Category'] = pd.cut(
-                df['Rating'], 
-                bins=[0, 3.0, 4.0, 5.0], 
-                labels=['Below Average', 'Good', 'Excellent'],
-                include_lowest=True
-            )
+        # Clean neighborhood names
+        df['Neighborhood'] = df['Neighborhood'].str.strip()
+        df['Neighborhood'] = df['Neighborhood'].str.title()
         
-        # Review volume categories
-        if 'Review_Count' in df.columns:
-            df['Review_Volume'] = pd.cut(
-                df['Review_Count'],
-                bins=[0, 10, 50, 200, float('inf')],
-                labels=['Few Reviews', 'Some Reviews', 'Many Reviews', 'Very Popular'],
-                include_lowest=True
-            )
-        
-        return df
-    
-    def process_all_data(self, input_file="la_restaurants_final.csv"):
-        """Main processing pipeline"""
-        self.logger.info("Starting data cleaning pipeline...")
-        
-        # Load the data created by the extractor
-        input_path = os.path.join(self.processed_data_path, input_file)
-        if not os.path.exists(input_path):
-            self.logger.error(f"Input file not found: {input_path}")
-            return None
-        
-        df = pd.read_csv(input_path)
-        initial_count = len(df)
-        self.logger.info(f"Starting with {initial_count} records")
-        
-        # Apply cleaning steps
-        df = self.clean_restaurant_names(df)
-        df = self.clean_ratings_and_reviews(df)
-        df = self.clean_price_levels(df)
-        df = self.clean_coordinates(df)
-        df = self.clean_zip_codes(df)
-        df = self.remove_duplicates(df)
-        df = self.add_derived_fields(df)
-        
-        # Save cleaned data
-        output_file = "la_restaurants_cleaned.csv"
-        output_path = os.path.join(self.processed_data_path, output_file)
-        df.to_csv(output_path, index=False, encoding='utf-8')
+        # Standardize ZIP codes (ensure 5 digits)
+        df['ZIP_Code'] = df['ZIP_Code'].astype(str).str.zfill(5)
         
         final_count = len(df)
-        self.logger.info(f"Cleaning completed: {final_count}/{initial_count} records retained")
-        self.logger.info(f"Cleaned data saved to: {output_path}")
+        removed = initial_count - final_count
         
-        # Print summary
-        self._print_cleaning_summary(df, initial_count, final_count)
-        
+        if removed > 0:
+            self.logger.info(f"Data cleaning removed {removed} records")
+            
         return df
     
-    def _print_cleaning_summary(self, df, initial_count, final_count):
-        """Print data cleaning summary statistics"""
-        print("\n" + "="*50)
-        print("DATA CLEANING SUMMARY")
-        print("="*50)
-        print(f"Initial records: {initial_count}")
-        print(f"Final records: {final_count}")
-        print(f"Records removed: {initial_count - final_count}")
-        print(f"Retention rate: {(final_count/initial_count)*100:.1f}%")
+    def create_summary_stats(self, df):
+        """Create summary statistics for reporting"""
         
-        if len(df) > 0:
-            print(f"\nData Quality:")
-            print(f"  Unique restaurants: {len(df)}")
-            print(f"  Average rating: {df['Rating'].mean():.2f}")
-            print(f"  ZIP codes covered: {df['ZIP_Code'].nunique()}")
-            print(f"  Neighborhoods: {df['Neighborhood'].nunique()}")
+        stats = {
+            'total_restaurants': len(df),
+            'unique_zip_codes': df['ZIP_Code'].nunique(),
+            'unique_neighborhoods': df['Neighborhood'].nunique(),
+            'avg_rating': df['Rating'].mean(),
+            'median_rating': df['Rating'].median(),
+            'avg_review_count': df['Review_Count'].mean(),
+            'price_distribution': df['Price_Label'].value_counts().to_dict(),
+            'rating_distribution': df['Rating_Category'].value_counts().to_dict(),
+            'top_zip_codes': df['ZIP_Code'].value_counts().head(10).to_dict(),
+            'top_neighborhoods': df['Neighborhood'].value_counts().head(10).to_dict()
+        }
+        
+        return stats
+    
+    def save_enhanced_data(self, df, filename='data/processed/la_restaurants_cleaned.csv'):
+        """Save the enhanced dataset"""
+        try:
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            df.to_csv(filename, index=False, encoding='utf-8')
+            self.logger.info(f"Enhanced data saved to {filename}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error saving enhanced data: {str(e)}")
+            return False
+    
+    def process_all_data(self):
+        """Main processing method"""
+        
+        self.logger.info("Starting enhanced data processing...")
+        
+        # Load data
+        df = self.load_data()
+        if df is None:
+            self.logger.error("Failed to load data. Cannot proceed.")
+            return
+        
+        # Clean data quality
+        df = self.clean_data_quality(df)
+        
+        # Add calculated fields
+        df = self.add_calculated_fields(df)
+        
+        # Create summary statistics
+        stats = self.create_summary_stats(df)
+        
+        # Save enhanced data
+        success = self.save_enhanced_data(df)
+        
+        if success:
+            print("\n" + "="*60)
+            print("ENHANCED DATA PROCESSING COMPLETE")
+            print("="*60)
+            print(f"📊 Total restaurants processed: {stats['total_restaurants']}")
+            print(f"📍 ZIP codes covered: {stats['unique_zip_codes']}")
+            print(f"🏘️  Neighborhoods covered: {stats['unique_neighborhoods']}")
+            print(f"⭐ Average rating: {stats['avg_rating']:.2f}")
+            print(f"📝 Average reviews per restaurant: {stats['avg_review_count']:.0f}")
             
-            print(f"\nMissing Data:")
-            for col in ['Rating', 'Price_Level', 'Review_Count']:
-                if col in df.columns:
-                    missing_pct = (df[col].isna().sum() / len(df)) * 100
-                    print(f"  {col}: {missing_pct:.1f}% missing")
+            print("\n💰 Price Distribution:")
+            for price, count in sorted(stats['price_distribution'].items()):
+                print(f"   {price}: {count} restaurants")
+            
+            print("\n⭐ Rating Distribution:")
+            for rating, count in sorted(stats['rating_distribution'].items()):
+                print(f"   {rating}: {count} restaurants")
+            
+            print("\n📁 Files created:")
+            print("   • la_restaurants_cleaned.csv (enhanced dataset with calculated fields)")
+            print("   • Ready for Power BI import with pre-calculated analysis fields!")
+            
+            print("\n🔍 New calculated fields added:")
+            print("   • Price_Label (readable price categories)")
+            print("   • Rating_Category (rating groupings)")
+            print("   • Review_Volume (review count categories)")
+            print("   • Market_Saturation_Index (density + rating combined)")
+            print("   • Market_Opportunity (business opportunity analysis)")
+            print("   • ZIP/Neighborhood statistics")
+            
+        else:
+            print("❌ Failed to save enhanced data")
         
-        print("="*50)
-        print("✅ Data cleaning completed successfully!")
-        print(f"📁 Output: data/processed/la_restaurants_cleaned.csv")
+        self.logger.info("Data cleaning and processing completed")
+
+if __name__ == "__main__":
+    cleaner = DataCleaner()
+    cleaner.process_all_data()
